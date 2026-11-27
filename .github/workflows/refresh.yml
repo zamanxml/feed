@@ -1,0 +1,50 @@
+name: refresh
+
+on:
+  schedule:
+    - cron: "30 4 * * *"
+    - cron: "30 16 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Download
+        env:
+          SOURCE_URL: ${{ secrets.SOURCE_URL }}
+        run: |
+          curl -fsSL --retry 3 --retry-delay 20 -o /tmp/new.xml "$SOURCE_URL"
+          size=$(stat -c%s /tmp/new.xml)
+          echo "size: $size"
+          [ "$size" -gt 100000 ] || { echo "File too small, keeping old copy"; exit 1; }
+          python3 -c "import xml.etree.ElementTree as E; E.parse('/tmp/new.xml')"
+
+      - name: Publish
+        run: |
+          cp /tmp/new.xml kompre.xml
+          if python3 translate_en.py kompre.xml /tmp/en.xml && python3 -c "import xml.etree.ElementTree as E; E.parse('/tmp/en.xml')"; then
+            cp /tmp/en.xml kompre_en.xml
+          else
+            echo "::warning::English feed failed, keeping previous kompre_en.xml"
+          fi
+          touch .nojekyll
+          git add -A
+          if git diff --cached --quiet; then echo "No changes"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan tmp
+          git add -A
+          git commit -q -m "update $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push -f origin tmp:main
